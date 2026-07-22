@@ -62,3 +62,5 @@ print(results)
 Language: Python (MVP) -> Rust/PyO3 (Future Performance Modules)
 Math/Vector Ops: NumPy
 Embeddings: Sentence Transformers (defaulting to lightweight, high-performance models)
+
+# Project for IEEE GEHU SoC'26
