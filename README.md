@@ -8,7 +8,7 @@
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 SimpleV is built with a strict **modular, layered architecture** — isolating storage, indexing, query execution, and embeddings into independent, testable components.
 
@@ -21,7 +21,7 @@ graph LR
     StorageEng --> FS[".sv & .wal Files"]
 ```
 
-📐 **[View All Architecture Diagrams →](ARCHITECTURE_DIAGRAMS.md)** — Detailed Mermaid diagrams covering:
+ **[View All Architecture Diagrams →](ARCHITECTURE_DIAGRAMS.md)** — Detailed Mermaid diagrams covering:
 
 | # | Diagram | What It Shows |
 |---|---------|---------------|
