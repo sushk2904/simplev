@@ -6,6 +6,33 @@
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![Status](https://img.shields.io/badge/status-Active_Development-orange.svg)
 
+---
+
+## 🏗️ Architecture
+
+SimpleV is built with a strict **modular, layered architecture** — isolating storage, indexing, query execution, and embeddings into independent, testable components.
+
+```mermaid
+graph LR
+    Client["Python SDK / CLI"] --> QueryEng["Query Engine"]
+    QueryEng --> Embed["Embeddings Module"]
+    QueryEng --> IndexEng["Indexing Engine"]
+    QueryEng --> StorageEng["Storage Engine"]
+    StorageEng --> FS[".sv & .wal Files"]
+```
+
+📐 **[View All Architecture Diagrams →](ARCHITECTURE_DIAGRAMS.md)** — Detailed Mermaid diagrams covering:
+
+| # | Diagram | What It Shows |
+|---|---------|---------------|
+| 1 | [System Architecture](ARCHITECTURE_DIAGRAMS.md#1-detailed-system-architecture) | Full module boundaries, data contracts, and disk artifacts |
+| 2 | [Query Pipeline](ARCHITECTURE_DIAGRAMS.md#2-query-execution-pipeline-6-step-search) | The 6-step search execution flow |
+| 3 | [Storage & WAL Lifecycle](ARCHITECTURE_DIAGRAMS.md#3-storage--wal-lifecycle) | Write ordering, soft deletion, and commit serialization |
+| 4 | [Crash Recovery](ARCHITECTURE_DIAGRAMS.md#4-crash-recovery-boot-sequence) | Boot sequence with WAL replay |
+| 5 | [`.sv` File Format](ARCHITECTURE_DIAGRAMS.md#5-sv-binary-file-format-layout) | Custom binary layout (Header → Tombstones → Metadata → Vectors) |
+
+---
+
 ## Overview
 
 As AI and Large Language Models (LLMs) become mainstream, the tooling around them has grown increasingly complex. Many vector databases require dedicated servers, Docker containers, cloud accounts, and intricate embedding configurations. 
