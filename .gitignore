@@ -1,3 +1,8 @@
+# SimpleV internal reference files (never push)
+code.md
+message.md
+git-pushes.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
