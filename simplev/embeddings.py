@@ -86,7 +86,7 @@ class EmbeddingManager:
                 kwargs["device"] = self._device
 
             self._model = SentenceTransformer(self._model_name, **kwargs)
-            self._dimension = self._model.get_sentence_embedding_dimension()
+            self._dimension = self._model.get_embedding_dimension()
 
             logger.info(
                 f"Model loaded successfully. Dimension: {self._dimension}"
@@ -188,6 +188,12 @@ class EmbeddingManager:
         Raises:
             EmbeddingError: If any text is invalid or encoding fails.
         """
+        if not isinstance(texts, list):
+            raise EmbeddingError(
+                f"embed_batch expects a list of strings, got {type(texts).__name__}. "
+                "Did you mean to call embed() instead?"
+            )
+
         if not texts:
             raise EmbeddingError("Cannot embed an empty list of texts.")
 

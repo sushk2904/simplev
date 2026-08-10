@@ -152,6 +152,10 @@ class TestEmbedBatch:
         with pytest.raises(EmbeddingError, match="index 2"):
             self.emb.embed_batch(["ok", "fine", None])
 
+    def test_batch_embed_with_string_raises(self):
+        with pytest.raises(EmbeddingError, match="expects a list of strings"):
+            self.emb.embed_batch("not a list, just a string")
+
 
 class TestUnload:
     """Test model memory management."""
