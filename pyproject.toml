@@ -1,14 +1,13 @@
-toml
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplev"
 version = "0.1.0.dev1"
 description = "The SQLite for Vector Search - a local-first vector database for AI applications"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "SimpleV Contributors"}
@@ -16,7 +15,6 @@ authors = [
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -41,6 +39,9 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/sushk2904/simplev"
 Repository = "https://github.com/sushk2904/simplev"
+
+[tool.setuptools.packages.find]
+include = ["simplev*"]
 
 [tool.black]
 line-length = 88
