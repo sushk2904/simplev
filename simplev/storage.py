@@ -107,7 +107,7 @@ class StorageEngine:
         if doc_id in self._id_map:
             raise StorageError(
                 f"Document '{doc_id}' already exists. "
-                "Delete it first if you want to replace it."
+                "Call compact() after deleting it to free the ID for reuse."
             )
 
         # make sure the vector is the right shape
