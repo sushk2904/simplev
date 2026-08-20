@@ -145,9 +145,26 @@ class TestSoftDeletion:
         # doc still exists, just tombstoned
         assert storage_with_data.has_document("doc_4") is True
 
+    def test_readd_deleted_without_compact_raises(self, storage_with_data):
+        storage_with_data.mark_deleted("doc_0")
+        with pytest.raises(StorageError, match="Call compact.* after deleting"):
+            storage_with_data.add("doc_0", "new text", make_vector(4))
+
 
 class TestCompaction:
     """Test that compaction actually removes tombstoned records."""
+
+    def test_readd_after_delete_and_compact_succeeds(self):
+        se = StorageEngine(dimension=4)
+        se.add("doc1", "initial text", make_vector(4))
+        se.mark_deleted("doc1")
+        se.compact()
+        new_vec = make_vector(4)
+        idx = se.add("doc1", "replacement text", new_vec)
+        assert idx == 0
+        assert se.count == 1
+        assert se.active_count == 1
+        assert se.get_metadata("doc1")["text"] == "replacement text"
 
     def test_compact_removes_deleted(self):
         se = StorageEngine(dimension=4)
