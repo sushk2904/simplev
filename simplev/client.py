@@ -30,6 +30,7 @@ from simplev.indexing import FlatIndex
 from simplev.persistence import FileManager
 from simplev.query import QueryEngine, QueryResult
 from simplev.storage import StorageEngine
+from simplev.wal import WriteAheadLog
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ class Client:
             Defaults to all-MiniLM-L6-v2 (384 dimensions).
         metric: Distance metric for search. Either 'cosine'
             or 'l2'. Defaults to 'cosine'.
+        use_wal: Whether to enable write-ahead logging for
+            crash recovery. Only works when a path is provided.
+            Defaults to True.
 
     Example:
         >>> db = Client()
@@ -64,10 +68,12 @@ class Client:
         path: Optional[Union[str, Path]] = None,
         model_name: str = "all-MiniLM-L6-v2",
         metric: str = "cosine",
+        use_wal: bool = True,
     ) -> None:
         self._path = Path(path) if path else None
         self._model_name = model_name
         self._metric = metric
+        self._use_wal = use_wal
 
         # set up the embedding manager
         self._embeddings = EmbeddingManager(model_name=model_name)
@@ -78,10 +84,18 @@ class Client:
         self._index: Optional[FlatIndex] = None
         self._query_engine: Optional[QueryEngine] = None
         self._dimension: Optional[int] = None
+        self._wal: Optional[WriteAheadLog] = None
 
-        # if a path was given and the file exists, load it
-        if self._path and self._path.exists():
-            self._load_from_disk()
+        # if a path was given, set up the WAL and load
+        if self._path:
+            if use_wal:
+                wal_path = Path(str(self._path) + ".wal")
+                self._wal = WriteAheadLog(wal_path)
+
+            if self._path.exists():
+                self._load_from_disk()
+                # check for crash recovery after loading
+                self._replay_wal()
 
     def _ensure_initialized(self, dimension: Optional[int] = None) -> None:
         """Make sure the internal engines are set up.
@@ -148,6 +162,10 @@ class Client:
             self._ensure_initialized()
             vec = self._embeddings.embed(text)
 
+        # log to WAL before touching memory
+        if self._wal is not None:
+            self._wal.log_insert(doc_id, text, vec, metadata)
+
         self._storage.add(doc_id, text, vec, metadata=metadata)
         return doc_id
 
@@ -188,10 +206,18 @@ class Client:
 
         added_ids = []
         for i, doc in enumerate(documents):
+            vec = vectors[i]
+
+            # log each insert to WAL
+            if self._wal is not None:
+                self._wal.log_insert(
+                    doc["doc_id"], doc["text"], vec, doc.get("metadata")
+                )
+
             self._storage.add(
                 doc["doc_id"],
                 doc["text"],
-                vectors[i],
+                vec,
                 metadata=doc.get("metadata"),
             )
             added_ids.append(doc["doc_id"])
@@ -237,6 +263,11 @@ class Client:
         """
         if self._storage is None:
             raise StorageError(f"Document '{doc_id}' not found.")
+
+        # log to WAL before touching memory
+        if self._wal is not None:
+            self._wal.log_delete(doc_id)
+
         return self._storage.mark_deleted(doc_id)
 
     def compact(self) -> int:
@@ -247,6 +278,38 @@ class Client:
         if self._storage is None:
             return 0
         return self._storage.compact()
+
+    def commit(self) -> Path:
+        """Save to disk and clear the WAL.
+
+        This is the 'safe checkpoint' -- after commit() returns,
+        everything is persisted in the .sv file and the WAL is
+        empty. If the process crashes after this, no data is lost.
+
+        Returns:
+            The path the file was saved to.
+
+        Raises:
+            SimpleVError: If no path is set or database is empty.
+        """
+        if self._path is None:
+            raise SimpleVError(
+                "Cannot commit an in-memory database. "
+                "Provide a path when creating the Client."
+            )
+
+        if self._storage is None or self._storage.count == 0:
+            raise SimpleVError("Nothing to commit -- database is empty.")
+
+        fm = FileManager()
+        fm.save(self._path, self._storage)
+
+        # truncate the WAL now that the .sv file is up to date
+        if self._wal is not None:
+            self._wal.truncate()
+
+        logger.info(f"Committed to {self._path}")
+        return self._path
 
     def save(self, path: Optional[Union[str, Path]] = None) -> Path:
         """Save the database to a .sv file.
@@ -295,6 +358,66 @@ class Client:
         logger.info(
             f"Loaded {storage.active_count} documents from {self._path}"
         )
+
+    def _replay_wal(self) -> None:
+        """Replay WAL entries for crash recovery.
+
+        If there's a non-empty .wal file, it means the process
+        crashed before the last commit. We replay those operations
+        and immediately commit to get back to a consistent state.
+        """
+        if self._wal is None or not self._wal.has_entries():
+            return
+
+        entries = self._wal.read_entries()
+        if not entries:
+            return
+
+        logger.info(
+            f"Crash recovery: replaying {len(entries)} WAL entries"
+        )
+
+        if self._storage is None:
+            # shouldn't happen if .sv was loaded, but be safe
+            return
+
+        replayed = 0
+        for entry in entries:
+            try:
+                if entry.operation == "insert":
+                    # skip if the doc was already loaded from the .sv
+                    if self._storage.has_document(entry.doc_id):
+                        continue
+
+                    vec = np.array(entry.vector, dtype=np.float32)
+                    self._storage.add(
+                        entry.doc_id,
+                        entry.text,
+                        vec,
+                        metadata=entry.metadata,
+                    )
+                    replayed += 1
+
+                elif entry.operation == "delete":
+                    if (self._storage.has_document(entry.doc_id)
+                            and self._storage.is_active(entry.doc_id)):
+                        self._storage.mark_deleted(entry.doc_id)
+                        replayed += 1
+
+            except Exception as e:
+                logger.warning(
+                    f"Failed to replay WAL entry {entry}: {e}"
+                )
+
+        if replayed > 0:
+            logger.info(f"Replayed {replayed} operations, committing")
+            # immediately commit to persist the recovered state
+            try:
+                fm = FileManager()
+                fm.save(self._path, self._storage)
+                self._wal.truncate()
+            except Exception as e:
+                logger.error(f"Failed to commit after WAL replay: {e}")
 
     @property
     def count(self) -> int:

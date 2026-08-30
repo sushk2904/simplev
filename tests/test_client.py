@@ -4,7 +4,7 @@ Tests for the Client SDK.
 We mock the embedding manager here so tests run fast without
 needing the actual sentence-transformers model. The Client is
 a thin facade so we're mainly testing that it wires things
-together correctly and that save/load works end-to-end.
+together correctly and that save/load and WAL work end-to-end.
 """
 
 import numpy as np
@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from simplev.client import Client
 from simplev.exceptions import SimpleVError, StorageError
+from simplev.wal import WriteAheadLog
 
 
 DIM = 4
@@ -42,7 +43,7 @@ class TestClientInit:
     def test_create_in_memory(self, mock_embeddings):
         db = Client()
         assert db.count == 0
-        assert db.dimension is None  # not initialized until first add
+        assert db.dimension is None
 
     def test_repr(self, mock_embeddings):
         db = Client()
@@ -70,7 +71,6 @@ class TestClientAdd:
         vec = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
         db.add("d1", "text", vector=vec)
         assert db.count == 1
-        # embed() should NOT have been called since we gave a vector
         mock_embeddings.embed.assert_not_called()
 
     def test_add_duplicate_raises(self, mock_embeddings):
@@ -114,14 +114,12 @@ class TestClientSearch:
         db.add("d1", "hello")
         db.add("d2", "world")
         results = db.search("test", top_k=2)
-        # should get something back (exact order depends on random vectors)
         assert len(results) <= 2
 
     def test_search_with_filters(self, mock_embeddings):
         db = Client()
         db.add("d1", "cat", metadata={"type": "animal"})
         db.add("d2", "car", metadata={"type": "vehicle"})
-
         results = db.search("test", filters={"type": "animal"})
         doc_ids = [r.doc_id for r in results]
         assert "d2" not in doc_ids
@@ -135,7 +133,7 @@ class TestClientDelete:
         db.add("d1", "text")
         result = db.delete("d1")
         assert result is True
-        assert db.count == 0  # active count
+        assert db.count == 0
 
     def test_delete_nonexistent_raises(self, mock_embeddings):
         db = Client()
@@ -156,20 +154,18 @@ class TestClientPersistence:
     def test_save_and_load(self, tmp_path, mock_embeddings):
         path = tmp_path / "test_db.sv"
 
-        # create and save
-        db = Client()
+        db = Client(use_wal=False)
         db.add("d1", "hello world", metadata={"page": 1})
         db.add("d2", "foo bar", metadata={"page": 2})
         db.save(path)
 
         assert path.exists()
 
-        # load into a new client
-        db2 = Client(path=path)
+        db2 = Client(path=path, use_wal=False)
         assert db2.count == 2
 
     def test_save_no_path_raises(self, mock_embeddings):
-        db = Client()  # no path given
+        db = Client()
         db.add("d1", "text")
         with pytest.raises(SimpleVError, match="No save path"):
             db.save()
@@ -184,3 +180,85 @@ class TestClientPersistence:
         assert len(db) == 0
         db.add("d1", "text")
         assert len(db) == 1
+
+
+class TestClientWAL:
+    """Test WAL integration and crash recovery."""
+
+    def test_wal_file_created(self, tmp_path, mock_embeddings):
+        path = tmp_path / "db.sv"
+        db = Client(path=path, use_wal=True)
+        db.add("d1", "hello")
+        db.save()
+
+        wal_path = Path(str(path) + ".wal")
+        assert wal_path.exists()
+
+    def test_commit_saves_and_truncates_wal(self, tmp_path, mock_embeddings):
+        path = tmp_path / "db.sv"
+        db = Client(path=path, use_wal=True)
+        db.add("d1", "hello")
+        db.add("d2", "world")
+
+        # WAL should have entries before commit
+        wal_path = Path(str(path) + ".wal")
+        assert wal_path.exists()
+        assert wal_path.stat().st_size > 0
+
+        # commit should save .sv and truncate WAL
+        db.commit()
+        assert path.exists()
+        assert wal_path.stat().st_size == 0
+
+    def test_crash_recovery_replays_inserts(self, tmp_path, mock_embeddings):
+        path = tmp_path / "db.sv"
+
+        # simulate: create db, add docs, commit, add more, then "crash"
+        db = Client(path=path, use_wal=True)
+        db.add("d1", "first doc")
+        db.commit()  # d1 is safe in .sv
+
+        # add more docs (only in WAL, not committed)
+        db.add("d2", "second doc")
+        db.add("d3", "third doc")
+        # don't commit -- simulate crash by just dropping the object
+        db._wal.close()
+        del db
+
+        # "restart" by creating a new Client on the same path
+        db2 = Client(path=path, use_wal=True)
+        # crash recovery should have replayed d2 and d3
+        assert db2.count == 3
+
+    def test_crash_recovery_replays_deletes(self, tmp_path, mock_embeddings):
+        path = tmp_path / "db.sv"
+
+        # create and commit 2 docs
+        db = Client(path=path, use_wal=True)
+        db.add("d1", "doc one")
+        db.add("d2", "doc two")
+        db.commit()  # both safe
+
+        # delete one (only in WAL)
+        db.delete("d2")
+        db._wal.close()
+        del db
+
+        # restart
+        db2 = Client(path=path, use_wal=True)
+        assert db2.count == 1  # d2 should be deleted after replay
+
+    def test_no_wal_when_disabled(self, tmp_path, mock_embeddings):
+        path = tmp_path / "db.sv"
+        db = Client(path=path, use_wal=False)
+        db.add("d1", "hello")
+        db.save()
+
+        wal_path = Path(str(path) + ".wal")
+        assert not wal_path.exists()
+
+    def test_commit_in_memory_raises(self, mock_embeddings):
+        db = Client(use_wal=False)
+        db.add("d1", "text")
+        with pytest.raises(SimpleVError, match="in-memory"):
+            db.commit()
