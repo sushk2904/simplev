@@ -25,9 +25,6 @@ from typing import Optional, Union
 
 import numpy as np
 
-from simplev.exceptions import StorageError
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -207,7 +204,7 @@ class WriteAheadLog:
         self.close()
 
         # open in write mode to truncate, then close
-        with open(self._path, "w", encoding="utf-8") as f:
+        with open(self._path, "w", encoding="utf-8"):
             pass  # just truncate, write nothing
 
         logger.debug(f"WAL truncated: {self._path}")

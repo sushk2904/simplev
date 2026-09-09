@@ -28,7 +28,6 @@ import numpy as np
 from simplev.exceptions import StorageError
 from simplev.storage import StorageEngine
 
-
 logger = logging.getLogger(__name__)
 
 # file format constants
@@ -47,13 +46,17 @@ class FileManager:
     """
 
     def save(
-        self, path: Union[str, Path], storage: StorageEngine
+        self,
+        path: Union[str, Path],
+        storage: StorageEngine,
+        allow_empty: bool = False,
     ) -> None:
         """Serialize a StorageEngine to a .sv file.
 
         Args:
             path: Where to write the file.
             storage: The storage engine to serialize.
+            allow_empty: If True, allows saving an empty storage with count=0.
 
         Raises:
             StorageError: If serialization fails.
@@ -66,7 +69,7 @@ class FileManager:
         count = storage.count
         dimension = storage.dimension
 
-        if vectors is None or count == 0:
+        if not allow_empty and (vectors is None or count == 0):
             raise StorageError("Cannot save an empty database.")
 
         try:
@@ -76,7 +79,10 @@ class FileManager:
                 f.write(header)
 
                 # -- write tombstone bitmap --
-                bitmap = self._pack_tombstones(mask, count)
+                if count > 0 and mask is not None:
+                    bitmap = self._pack_tombstones(mask, count)
+                else:
+                    bitmap = b""
                 f.write(bitmap)
 
                 # -- write metadata as json --
@@ -87,7 +93,10 @@ class FileManager:
                 f.write(meta_bytes)
 
                 # -- write raw vector bytes --
-                vec_bytes = vectors.astype(np.float32).tobytes()
+                if vectors is not None and count > 0:
+                    vec_bytes = vectors.astype(np.float32).tobytes()
+                else:
+                    vec_bytes = b""
                 f.write(vec_bytes)
 
             logger.info(
@@ -101,6 +110,13 @@ class FileManager:
             raise StorageError(
                 f"Failed to save database to '{path}': {e}"
             ) from e
+
+    def create_empty(
+        self, path: Union[str, Path], dimension: int = 384
+    ) -> None:
+        """Create a valid empty .sv database file with initialized header."""
+        storage = StorageEngine(dimension=dimension)
+        self.save(path, storage, allow_empty=True)
 
     def load(
         self, path: Union[str, Path]
@@ -237,8 +253,6 @@ class FileManager:
 
         if dimension == 0:
             raise StorageError("Invalid file: dimension is 0")
-        if count == 0:
-            raise StorageError("Invalid file: document count is 0")
 
         return dimension, count
 
@@ -328,6 +342,9 @@ class FileManager:
         it was originally saved.
         """
         storage = StorageEngine(dimension=dimension)
+
+        if count == 0:
+            return storage
 
         # set internal state directly -- this is the only place
         # we reach into the storage engine's internals, and it's
