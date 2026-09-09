@@ -13,6 +13,7 @@ so the rest of the codebase never touches it directly.
 import logging
 from pathlib import Path
 from typing import Optional, Union
+
 import numpy as np
 
 from simplev.exceptions import EmbeddingError

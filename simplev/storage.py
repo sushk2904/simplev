@@ -18,7 +18,6 @@ import numpy as np
 
 from simplev.exceptions import StorageError
 
-
 logger = logging.getLogger(__name__)
 
 

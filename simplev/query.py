@@ -28,7 +28,6 @@ from simplev.exceptions import QueryError
 from simplev.indexing import FlatIndex
 from simplev.storage import StorageEngine
 
-
 logger = logging.getLogger(__name__)
 
 

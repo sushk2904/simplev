@@ -26,12 +26,11 @@ import numpy as np
 
 from simplev.embeddings import EmbeddingManager
 from simplev.exceptions import SimpleVError, StorageError
-from simplev.indexing import FlatIndex
+from simplev.indexing import FlatIndex, HNSWIndex
 from simplev.persistence import FileManager
 from simplev.query import QueryEngine, QueryResult
 from simplev.storage import StorageEngine
 from simplev.wal import WriteAheadLog
-
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +53,9 @@ class Client:
         use_wal: Whether to enable write-ahead logging for
             crash recovery. Only works when a path is provided.
             Defaults to True.
+        index_type: Type of index to use for search: 'flat' for exact
+            nearest neighbor, or 'hnsw' for approximate nearest neighbor.
+            Defaults to 'flat'.
 
     Example:
         >>> db = Client()
@@ -69,11 +71,18 @@ class Client:
         model_name: str = "all-MiniLM-L6-v2",
         metric: str = "cosine",
         use_wal: bool = True,
+        index_type: str = "flat",
     ) -> None:
         self._path = Path(path) if path else None
         self._model_name = model_name
         self._metric = metric
         self._use_wal = use_wal
+        self._index_type = index_type.lower()
+
+        if self._index_type not in ("flat", "hnsw"):
+            raise SimpleVError(
+                f"Unsupported index_type '{index_type}'. Must be 'flat' or 'hnsw'."
+            )
 
         # set up the embedding manager
         self._embeddings = EmbeddingManager(model_name=model_name)
@@ -81,7 +90,7 @@ class Client:
         # we don't know the dimension until the model loads,
         # but we might know it from a loaded .sv file
         self._storage: Optional[StorageEngine] = None
-        self._index: Optional[FlatIndex] = None
+        self._index: Optional[Union[FlatIndex, HNSWIndex]] = None
         self._query_engine: Optional[QueryEngine] = None
         self._dimension: Optional[int] = None
         self._wal: Optional[WriteAheadLog] = None
@@ -96,6 +105,12 @@ class Client:
                 self._load_from_disk()
                 # check for crash recovery after loading
                 self._replay_wal()
+
+    def _create_index(self, metric: str) -> Union[FlatIndex, HNSWIndex]:
+        """Create the configured index instance."""
+        if self._index_type == "hnsw":
+            return HNSWIndex(metric=metric)
+        return FlatIndex(metric=metric)
 
     def _ensure_initialized(self, dimension: Optional[int] = None) -> None:
         """Make sure the internal engines are set up.
@@ -113,7 +128,7 @@ class Client:
 
         self._dimension = dimension
         self._storage = StorageEngine(dimension=dimension)
-        self._index = FlatIndex(metric=self._metric)
+        self._index = self._create_index(metric=self._metric)
         self._query_engine = QueryEngine(
             storage=self._storage,
             embeddings=self._embeddings,
@@ -121,7 +136,23 @@ class Client:
         )
 
         logger.info(
-            f"Client initialized: dim={dimension}, metric={self._metric}"
+            f"Client initialized: dim={dimension}, metric={self._metric}, "
+            f"index_type={self._index_type}"
+        )
+
+    def insert(
+        self,
+        doc_id: str,
+        text: str,
+        metadata: Optional[dict] = None,
+        vector: Optional[np.ndarray] = None,
+    ) -> str:
+        """Add a document to the database.
+
+        Alias for add() for compatibility with documented API.
+        """
+        return self.add(
+            doc_id=doc_id, text=text, metadata=metadata, vector=vector
         )
 
     def add(
@@ -348,7 +379,7 @@ class Client:
 
         self._storage = storage
         self._dimension = storage.dimension
-        self._index = FlatIndex(metric=self._metric)
+        self._index = self._create_index(metric=self._metric)
         self._query_engine = QueryEngine(
             storage=self._storage,
             embeddings=self._embeddings,
@@ -418,6 +449,34 @@ class Client:
                 self._wal.truncate()
             except Exception as e:
                 logger.error(f"Failed to commit after WAL replay: {e}")
+
+    def info(self) -> dict:
+        """Return diagnostic metadata about the database."""
+        wal_size = 0
+        wal_exists = False
+        if self._wal is not None and self._wal.path.exists():
+            wal_exists = True
+            wal_size = self._wal.path.stat().st_size
+
+        file_size = 0
+        file_exists = False
+        if self._path is not None and self._path.exists():
+            file_exists = True
+            file_size = self._path.stat().st_size
+
+        return {
+            "path": str(self._path) if self._path else None,
+            "count": self.count,
+            "active_count": self._storage.active_count if self._storage else 0,
+            "dimension": self._dimension,
+            "model_name": self._model_name,
+            "metric": self._metric,
+            "index_type": self._index_type,
+            "file_size_bytes": file_size,
+            "file_exists": file_exists,
+            "wal_size_bytes": wal_size,
+            "wal_exists": wal_exists,
+        }
 
     @property
     def count(self) -> int:
