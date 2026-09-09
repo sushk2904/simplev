@@ -29,6 +29,7 @@ from simplev.exceptions import SimpleVError, StorageError
 from simplev.indexing import FlatIndex, HNSWIndex
 from simplev.persistence import FileManager
 from simplev.query import QueryEngine, QueryResult
+from simplev.sparse import BM25Index
 from simplev.storage import StorageEngine
 from simplev.wal import WriteAheadLog
 
@@ -91,6 +92,7 @@ class Client:
         # but we might know it from a loaded .sv file
         self._storage: Optional[StorageEngine] = None
         self._index: Optional[Union[FlatIndex, HNSWIndex]] = None
+        self._sparse_index: Optional[BM25Index] = None
         self._query_engine: Optional[QueryEngine] = None
         self._dimension: Optional[int] = None
         self._wal: Optional[WriteAheadLog] = None
@@ -129,6 +131,7 @@ class Client:
         self._dimension = dimension
         self._storage = StorageEngine(dimension=dimension)
         self._index = self._create_index(metric=self._metric)
+        self._sparse_index = BM25Index()
         self._query_engine = QueryEngine(
             storage=self._storage,
             embeddings=self._embeddings,
@@ -198,6 +201,8 @@ class Client:
             self._wal.log_insert(doc_id, text, vec, metadata)
 
         self._storage.add(doc_id, text, vec, metadata=metadata)
+        if self._sparse_index is not None:
+            self._sparse_index.add_document(doc_id, text)
         return doc_id
 
     def add_many(
@@ -251,9 +256,153 @@ class Client:
                 vec,
                 metadata=doc.get("metadata"),
             )
+            if self._sparse_index is not None:
+                self._sparse_index.add_document(doc["doc_id"], doc["text"])
             added_ids.append(doc["doc_id"])
 
         return added_ids
+
+    def update(
+        self,
+        doc_id: str,
+        text: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        vector: Optional[np.ndarray] = None,
+    ) -> str:
+        """Update an existing document.
+
+        Args:
+            doc_id: Identifier of the document to update.
+            text: New text content (optional if only updating metadata).
+            metadata: New metadata dict (optional).
+            vector: New embedding vector (optional, auto-embedded if text is provided).
+
+        Returns:
+            The doc_id of the updated document.
+
+        Raises:
+            SimpleVError: If document does not exist or was deleted.
+        """
+        if self._storage is None or not self._storage.has_document(doc_id):
+            raise SimpleVError(f"Document '{doc_id}' not found.")
+
+        if not self._storage.is_active(doc_id):
+            raise SimpleVError(
+                f"Document '{doc_id}' is deleted. Use upsert() to reactivate it."
+            )
+
+        existing = self._storage.get_record(doc_id, include_vector=True)
+        if existing is None:
+            raise SimpleVError(f"Document '{doc_id}' not found.")
+
+        new_text = text if text is not None else existing["text"]
+        new_meta = metadata if metadata is not None else existing["metadata"]
+
+        if vector is not None:
+            if vector.ndim != 1:
+                raise SimpleVError(
+                    f"Vector must be 1-D, got shape {vector.shape}"
+                )
+            self._ensure_initialized(dimension=vector.shape[0])
+            vec = vector.astype(np.float32, copy=False)
+        elif text is not None:
+            self._ensure_initialized()
+            vec = self._embeddings.embed(new_text)
+        else:
+            vec = existing["vector"]
+
+        if self._wal is not None:
+            self._wal.log_update(doc_id, new_text, vec, new_meta)
+
+        self._storage.update(doc_id, new_text, vec, metadata=new_meta)
+
+        if self._sparse_index is not None:
+            self._sparse_index.remove_document(doc_id)
+            self._sparse_index.add_document(doc_id, new_text)
+
+        if self._index_type == "hnsw" and hasattr(self._index, "build"):
+            all_vecs = self._storage.get_vectors()
+            if all_vecs is not None:
+                self._index.build(all_vecs)
+
+        return doc_id
+
+    def upsert(
+        self,
+        doc_id: str,
+        text: str,
+        metadata: Optional[dict] = None,
+        vector: Optional[np.ndarray] = None,
+    ) -> str:
+        """Insert or update a document.
+
+        If doc_id exists (even if tombstoned), it is updated in place.
+        Otherwise, it is added as a new document.
+
+        Args:
+            doc_id: Unique identifier for this document.
+            text: Text content.
+            metadata: Optional metadata dict.
+            vector: Optional pre-computed embedding vector.
+
+        Returns:
+            The doc_id that was inserted or updated.
+        """
+        if self._storage is not None and self._storage.has_document(doc_id):
+            if self._storage.is_active(doc_id):
+                return self.update(
+                    doc_id=doc_id, text=text, metadata=metadata, vector=vector
+                )
+            else:
+                if vector is not None:
+                    if vector.ndim != 1:
+                        raise SimpleVError(
+                            f"Vector must be 1-D, got shape {vector.shape}"
+                        )
+                    self._ensure_initialized(dimension=vector.shape[0])
+                    vec = vector.astype(np.float32, copy=False)
+                else:
+                    self._ensure_initialized()
+                    vec = self._embeddings.embed(text)
+
+                if self._wal is not None:
+                    self._wal.log_update(doc_id, text, vec, metadata)
+
+                self._storage.update(doc_id, text, vec, metadata=metadata)
+
+                if self._sparse_index is not None:
+                    self._sparse_index.remove_document(doc_id)
+                    self._sparse_index.add_document(doc_id, text)
+
+                if self._index_type == "hnsw" and hasattr(self._index, "build"):
+                    all_vecs = self._storage.get_vectors()
+                    if all_vecs is not None:
+                        self._index.build(all_vecs)
+
+                return doc_id
+        else:
+            return self.add(
+                doc_id=doc_id, text=text, metadata=metadata, vector=vector
+            )
+
+    def get(
+        self, doc_id: str, include_vector: bool = False
+    ) -> Optional[dict]:
+        """Retrieve a document record by doc_id.
+
+        Args:
+            doc_id: The document identifier.
+            include_vector: Whether to include the embedding vector.
+
+        Returns:
+            Dict containing 'doc_id', 'text', 'metadata', and optional 'vector',
+            or None if the document does not exist or was deleted.
+        """
+        if self._storage is None:
+            return None
+        return self._storage.get_record(
+            doc_id, include_vector=include_vector
+        )
 
     def search(
         self,
@@ -279,6 +428,59 @@ class Client:
             query=query, top_k=top_k, filters=filters
         )
 
+    def search_batch(
+        self,
+        queries: list[str],
+        top_k: int = 5,
+        filters: Optional[dict] = None,
+    ) -> list[list[QueryResult]]:
+        """Run semantic search for multiple queries in a batch.
+
+        Args:
+            queries: List of query strings.
+            top_k: Maximum number of results per query.
+            filters: Optional metadata filters.
+
+        Returns:
+            List of QueryResult lists, one per query.
+        """
+        if self._query_engine is None:
+            return [[] for _ in queries]
+        return self._query_engine.search_batch(
+            queries=queries, top_k=top_k, filters=filters
+        )
+
+    def hybrid_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        alpha: float = 0.5,
+        filters: Optional[dict] = None,
+    ) -> list[QueryResult]:
+        """Run hybrid search combining dense semantic search and BM25 sparse search.
+
+        Uses Reciprocal Rank Fusion (RRF) to combine dense and sparse rankings.
+
+        Args:
+            query: The search query text.
+            top_k: Maximum number of results to return.
+            alpha: Weight balancing dense vs sparse relevance (0.0 to 1.0).
+                1.0 means pure dense search, 0.0 means pure BM25 search.
+            filters: Optional metadata filters.
+
+        Returns:
+            List of QueryResult objects sorted by fused RRF relevance score.
+        """
+        if self._query_engine is None or self._sparse_index is None:
+            return []
+        return self._query_engine.search_hybrid(
+            query=query,
+            sparse_index=self._sparse_index,
+            top_k=top_k,
+            alpha=alpha,
+            filters=filters,
+        )
+
     def delete(self, doc_id: str) -> bool:
         """Soft-delete a document.
 
@@ -299,16 +501,36 @@ class Client:
         if self._wal is not None:
             self._wal.log_delete(doc_id)
 
-        return self._storage.mark_deleted(doc_id)
+        deleted = self._storage.mark_deleted(doc_id)
+        if deleted and self._sparse_index is not None:
+            self._sparse_index.remove_document(doc_id)
+        return deleted
 
     def compact(self) -> int:
         """Remove soft-deleted documents from memory.
 
-        Returns the number of records that were removed.
+        Rebuilds vector storage and synchronizes dense (HNSW) and
+        sparse (BM25) search indices.
+
+        Returns:
+            The number of records that were removed.
         """
         if self._storage is None:
             return 0
-        return self._storage.compact()
+        removed = self._storage.compact()
+        if removed > 0:
+            if self._index_type == "hnsw" and hasattr(self._index, "build"):
+                vecs = self._storage.get_vectors()
+                if vecs is not None and len(vecs) > 0:
+                    self._index.build(vecs)
+                elif hasattr(self._index, "_reset"):
+                    self._index._reset()
+
+            self._sparse_index = BM25Index()
+            for rec in self._storage.get_active_records():
+                self._sparse_index.add_document(rec["doc_id"], rec["text"])
+
+        return removed
 
     def commit(self) -> Path:
         """Save to disk and clear the WAL.
@@ -380,6 +602,15 @@ class Client:
         self._storage = storage
         self._dimension = storage.dimension
         self._index = self._create_index(metric=self._metric)
+        self._sparse_index = BM25Index()
+        for rec in storage.get_active_records():
+            self._sparse_index.add_document(rec["doc_id"], rec["text"])
+
+        if self._index_type == "hnsw" and storage.active_count > 0:
+            vecs = storage.get_vectors()
+            if vecs is not None:
+                self._index.build(vecs)
+
         self._query_engine = QueryEngine(
             storage=self._storage,
             embeddings=self._embeddings,
@@ -427,12 +658,41 @@ class Client:
                         vec,
                         metadata=entry.metadata,
                     )
+                    if self._sparse_index is not None:
+                        self._sparse_index.add_document(
+                            entry.doc_id, entry.text
+                        )
+                    replayed += 1
+
+                elif entry.operation == "update":
+                    vec = np.array(entry.vector, dtype=np.float32)
+                    if self._storage.has_document(entry.doc_id):
+                        self._storage.update(
+                            entry.doc_id,
+                            entry.text,
+                            vec,
+                            metadata=entry.metadata,
+                        )
+                    else:
+                        self._storage.add(
+                            entry.doc_id,
+                            entry.text,
+                            vec,
+                            metadata=entry.metadata,
+                        )
+                    if self._sparse_index is not None:
+                        self._sparse_index.remove_document(entry.doc_id)
+                        self._sparse_index.add_document(
+                            entry.doc_id, entry.text
+                        )
                     replayed += 1
 
                 elif entry.operation == "delete":
                     if (self._storage.has_document(entry.doc_id)
                             and self._storage.is_active(entry.doc_id)):
                         self._storage.mark_deleted(entry.doc_id)
+                        if self._sparse_index is not None:
+                            self._sparse_index.remove_document(entry.doc_id)
                         replayed += 1
 
             except Exception as e:
@@ -442,6 +702,11 @@ class Client:
 
         if replayed > 0:
             logger.info(f"Replayed {replayed} operations, committing")
+            if self._index_type == "hnsw" and hasattr(self._index, "build"):
+                vecs = self._storage.get_vectors()
+                if vecs is not None:
+                    self._index.build(vecs)
+
             # immediately commit to persist the recovered state
             try:
                 fm = FileManager()
@@ -497,3 +762,22 @@ class Client:
 
     def __len__(self) -> int:
         return self.count
+
+    def __getitem__(self, doc_id: str) -> dict:
+        """Retrieve a document record by doc_id like db['doc1']."""
+        rec = self.get(doc_id)
+        if rec is None:
+            raise KeyError(f"Document '{doc_id}' not found.")
+        return rec
+
+    def __contains__(self, doc_id: str) -> bool:
+        """Check if an active document exists in the database ('doc1' in db)."""
+        if self._storage is None:
+            return False
+        return self._storage.is_active(doc_id)
+
+    def __iter__(self):
+        """Iterate over all active document records."""
+        if self._storage is None:
+            return iter([])
+        return iter(self._storage.get_active_records())

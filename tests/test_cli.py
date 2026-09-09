@@ -136,3 +136,80 @@ class TestCLIIngestAndSearch:
     def test_search_missing_db_fails(self, tmp_path):
         exit_code = main(["search", "query", "--db", str(tmp_path / "missing.sv")])
         assert exit_code == 1
+
+    def test_search_hybrid_and_hnsw_flags(
+        self, tmp_path, mock_embeddings, capsys
+    ):
+        db_file = tmp_path / "hybrid_cli.sv"
+        doc_file = tmp_path / "hybrid.txt"
+        doc_file.write_text("lexical keyword and neural search", encoding="utf-8")
+
+        main(["ingest", str(doc_file), "--db", str(db_file)])
+        capsys.readouterr()
+
+        # Hybrid search
+        exit_code = main(
+            [
+                "search",
+                "lexical keyword",
+                "--db",
+                str(db_file),
+                "--hybrid",
+                "--alpha",
+                "0.3",
+            ]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr().out
+        results = json.loads(captured)
+        assert len(results) >= 1
+
+        # HNSW search flag
+        exit_code = main(
+            ["search", "neural search", "--db", str(db_file), "--index-type", "hnsw"]
+        )
+        assert exit_code == 0
+
+
+class TestCLIGet:
+    """Test 'simplev get' command."""
+
+    def test_get_existing_human_readable(
+        self, tmp_path, mock_embeddings, capsys
+    ):
+        db_file = tmp_path / "get_cli.sv"
+        doc_file = tmp_path / "doc.txt"
+        doc_file.write_text("retrieval test content", encoding="utf-8")
+
+        main(["ingest", str(doc_file), "--db", str(db_file)])
+        capsys.readouterr()
+
+        exit_code = main(["get", "doc_chunk_0", "--db", str(db_file)])
+        assert exit_code == 0
+        captured = capsys.readouterr().out
+        assert "Document ID: doc_chunk_0" in captured
+        assert "retrieval test content" in captured
+
+    def test_get_existing_json(self, tmp_path, mock_embeddings, capsys):
+        db_file = tmp_path / "get_json.sv"
+        doc_file = tmp_path / "doc.txt"
+        doc_file.write_text("json retrieval content", encoding="utf-8")
+
+        main(["ingest", str(doc_file), "--db", str(db_file)])
+        capsys.readouterr()
+
+        exit_code = main(
+            ["get", "doc_chunk_0", "--db", str(db_file), "--json"]
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr().out
+        data = json.loads(captured)
+        assert data["doc_id"] == "doc_chunk_0"
+        assert "json retrieval content" in data["text"]
+
+    def test_get_missing_doc_fails(self, tmp_path, mock_embeddings):
+        db_file = tmp_path / "get_missing.sv"
+        main(["init", str(db_file), "--dimension", "4"])
+
+        exit_code = main(["get", "nonexistent", "--db", str(db_file)])
+        assert exit_code == 1

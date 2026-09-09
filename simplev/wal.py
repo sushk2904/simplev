@@ -35,6 +35,7 @@ class WALEntry:
     """
     INSERT = "insert"
     DELETE = "delete"
+    UPDATE = "update"
 
     def __init__(
         self,
@@ -149,6 +150,26 @@ class WriteAheadLog:
         entry = WALEntry(
             operation=WALEntry.DELETE,
             doc_id=doc_id,
+        )
+
+        self._write_entry(entry)
+
+    def log_update(
+        self,
+        doc_id: str,
+        text: str,
+        vector: np.ndarray,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Log an update operation."""
+        self._ensure_open()
+
+        entry = WALEntry(
+            operation=WALEntry.UPDATE,
+            doc_id=doc_id,
+            text=text,
+            vector=vector.tolist(),
+            metadata=metadata,
         )
 
         self._write_entry(entry)

@@ -151,8 +151,19 @@ def cmd_search(args: argparse.Namespace) -> int:
                 )
 
     try:
-        db = Client(path=db_path)
-        results = db.search(query=args.query, top_k=args.top, filters=filters)
+        index_type = getattr(args, "index_type", "flat")
+        db = Client(path=db_path, index_type=index_type)
+        if getattr(args, "hybrid", False):
+            results = db.hybrid_search(
+                query=args.query,
+                top_k=args.top,
+                alpha=getattr(args, "alpha", 0.5),
+                filters=filters,
+            )
+        else:
+            results = db.search(
+                query=args.query, top_k=args.top, filters=filters
+            )
 
         if args.format == "json":
             output = [r.to_dict() for r in results]
@@ -172,6 +183,35 @@ def cmd_search(args: argparse.Namespace) -> int:
         return 0
     except Exception as e:
         print(f"Error during search: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_get(args: argparse.Namespace) -> int:
+    """Retrieve a document record by doc_id."""
+    db_path = _ensure_sv_extension(Path(args.db))
+    if not db_path.exists():
+        print(f"Error: Database file '{db_path}' not found.", file=sys.stderr)
+        return 1
+
+    try:
+        db = Client(path=db_path)
+        record = db.get(args.doc_id)
+        if record is None:
+            print(
+                f"Error: Document '{args.doc_id}' not found.", file=sys.stderr
+            )
+            return 1
+
+        if args.json:
+            print(json.dumps(record, indent=2, ensure_ascii=False))
+        else:
+            print(f"Document ID: {record['doc_id']}")
+            print(f"Text       : {record['text']}")
+            if record.get("metadata"):
+                print(f"Metadata   : {record['metadata']}")
+        return 0
+    except Exception as e:
+        print(f"Error retrieving document: {e}", file=sys.stderr)
         return 1
 
 
@@ -287,6 +327,35 @@ def build_parser() -> argparse.ArgumentParser:
         default="json",
         help="Output format (default: json)",
     )
+    p_search.add_argument(
+        "--index-type",
+        choices=["flat", "hnsw"],
+        default="flat",
+        help="Index type to use for search (default: flat)",
+    )
+    p_search.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Use hybrid dense + sparse (BM25) search",
+    )
+    p_search.add_argument(
+        "--alpha",
+        type=float,
+        default=0.5,
+        help="Hybrid balance weight: 1.0 = dense only, 0.0 = BM25 only (default: 0.5)",
+    )
+
+    # get
+    p_get = subparsers.add_parser(
+        "get", help="Retrieve a document record by doc_id"
+    )
+    p_get.add_argument("doc_id", help="Document ID to retrieve")
+    p_get.add_argument(
+        "--db", required=True, help="Path to SimpleV database"
+    )
+    p_get.add_argument(
+        "--json", action="store_true", help="Output document record as JSON"
+    )
 
     # info
     p_info = subparsers.add_parser(
@@ -313,6 +382,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "init": cmd_init,
         "ingest": cmd_ingest,
         "search": cmd_search,
+        "get": cmd_get,
         "info": cmd_info,
     }
 
