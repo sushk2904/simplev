@@ -16,7 +16,6 @@ from typing import Optional
 
 from simplev.exceptions import SimpleVError
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -116,7 +115,10 @@ def _chunk_by_separator(
             continue
 
         # would adding this segment exceed the chunk size?
-        test_chunk = (current_chunk + separator + segment).strip() if current_chunk else segment
+        if current_chunk:
+            test_chunk = (current_chunk + separator + segment).strip()
+        else:
+            test_chunk = segment
 
         if len(test_chunk) <= chunk_size:
             current_chunk = test_chunk

@@ -25,9 +25,6 @@ from typing import Optional, Union
 
 import numpy as np
 
-from simplev.exceptions import StorageError
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +35,7 @@ class WALEntry:
     """
     INSERT = "insert"
     DELETE = "delete"
+    UPDATE = "update"
 
     def __init__(
         self,
@@ -156,6 +154,26 @@ class WriteAheadLog:
 
         self._write_entry(entry)
 
+    def log_update(
+        self,
+        doc_id: str,
+        text: str,
+        vector: np.ndarray,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Log an update operation."""
+        self._ensure_open()
+
+        entry = WALEntry(
+            operation=WALEntry.UPDATE,
+            doc_id=doc_id,
+            text=text,
+            vector=vector.tolist(),
+            metadata=metadata,
+        )
+
+        self._write_entry(entry)
+
     def _write_entry(self, entry: WALEntry) -> None:
         """Write a single entry and flush to disk."""
         line = entry.to_json() + "\n"
@@ -207,7 +225,7 @@ class WriteAheadLog:
         self.close()
 
         # open in write mode to truncate, then close
-        with open(self._path, "w", encoding="utf-8") as f:
+        with open(self._path, "w", encoding="utf-8"):
             pass  # just truncate, write nothing
 
         logger.debug(f"WAL truncated: {self._path}")

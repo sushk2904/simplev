@@ -40,6 +40,9 @@ dev = [
 Homepage = "https://github.com/sushk2904/simplev"
 Repository = "https://github.com/sushk2904/simplev"
 
+[project.scripts]
+simplev = "simplev.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["simplev*"]
 

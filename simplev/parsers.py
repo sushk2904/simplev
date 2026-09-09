@@ -22,7 +22,6 @@ from typing import Union
 
 from simplev.exceptions import SimpleVError
 
-
 logger = logging.getLogger(__name__)
 
 

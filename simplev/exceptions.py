@@ -13,7 +13,7 @@ class SimpleVError(Exception):
 
 class EmbeddingError(SimpleVError):
     """Raised when something goes wrong during embedding generation.
-    
+
     Could be a model loading failure, bad input text,
     or the model returning something unexpected.
     """
