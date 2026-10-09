@@ -28,7 +28,6 @@ import numpy as np
 from simplev.exceptions import StorageError
 from simplev.storage import StorageEngine
 
-
 logger = logging.getLogger(__name__)
 
 # file format constants
@@ -47,13 +46,18 @@ class FileManager:
     """
 
     def save(
-        self, path: Union[str, Path], storage: StorageEngine
+        self,
+        path: Union[str, Path],
+        storage: StorageEngine,
+        allow_empty: bool = False,
     ) -> None:
         """Serialize a StorageEngine to a .sv file.
 
         Args:
             path: Where to write the file.
             storage: The storage engine to serialize.
+            allow_empty: If True, allows saving a database with
+                zero documents (used by create_empty).
 
         Raises:
             StorageError: If serialization fails.
@@ -66,7 +70,7 @@ class FileManager:
         count = storage.count
         dimension = storage.dimension
 
-        if vectors is None or count == 0:
+        if not allow_empty and (vectors is None or count == 0):
             raise StorageError("Cannot save an empty database.")
 
         try:
@@ -76,7 +80,10 @@ class FileManager:
                 f.write(header)
 
                 # -- write tombstone bitmap --
-                bitmap = self._pack_tombstones(mask, count)
+                if count > 0 and mask is not None:
+                    bitmap = self._pack_tombstones(mask, count)
+                else:
+                    bitmap = b""
                 f.write(bitmap)
 
                 # -- write metadata as json --
@@ -87,24 +94,35 @@ class FileManager:
                 f.write(meta_bytes)
 
                 # -- write raw vector bytes --
-                vec_bytes = vectors.astype(np.float32).tobytes()
+                if vectors is not None and count > 0:
+                    vec_bytes = vectors.astype(np.float32).tobytes()
+                else:
+                    vec_bytes = b""
                 f.write(vec_bytes)
 
             logger.info(
-                f"Saved {count} documents to {path} "
-                f"({path.stat().st_size} bytes)"
+                f"Saved {count} documents to {path} " f"({path.stat().st_size} bytes)"
             )
 
         except StorageError:
             raise
         except Exception as e:
-            raise StorageError(
-                f"Failed to save database to '{path}': {e}"
-            ) from e
+            raise StorageError(f"Failed to save database to '{path}': {e}") from e
 
-    def load(
-        self, path: Union[str, Path]
-    ) -> StorageEngine:
+    def create_empty(self, path: Union[str, Path], dimension: int = 384) -> None:
+        """Create a valid empty .sv database file with initialized header.
+
+        This is used by the CLI 'init' command to pre-create a database
+        file before any documents are added.
+
+        Args:
+            path: Where to write the file.
+            dimension: Embedding vector dimension to store in header.
+        """
+        storage = StorageEngine(dimension=dimension)
+        self.save(path, storage, allow_empty=True)
+
+    def load(self, path: Union[str, Path]) -> StorageEngine:
         """Deserialize a .sv file into a StorageEngine.
 
         Args:
@@ -128,9 +146,14 @@ class FileManager:
                 if len(header_bytes) < HEADER_SIZE:
                     raise StorageError(
                         f"File too small to contain a valid header "
-                        f"(got {len(header_bytes)} bytes, need {HEADER_SIZE})"
+                        f"(got {len(header_bytes)} bytes, "
+                        f"need {HEADER_SIZE})"
                     )
                 dimension, count = self._unpack_header(header_bytes)
+
+                if count == 0:
+                    # empty database file -- return an empty engine
+                    return StorageEngine(dimension=dimension)
 
                 # -- read tombstone bitmap --
                 bitmap_size = (count + 7) // 8  # ceil division
@@ -153,7 +176,8 @@ class FileManager:
                 vec_bytes = f.read(expected_vec_bytes)
                 if len(vec_bytes) < expected_vec_bytes:
                     raise StorageError(
-                        f"File truncated: expected {expected_vec_bytes} bytes "
+                        f"File truncated: expected "
+                        f"{expected_vec_bytes} bytes "
                         f"for vectors, got {len(vec_bytes)}"
                     )
                 vectors = np.frombuffer(vec_bytes, dtype=np.float32)
@@ -164,18 +188,13 @@ class FileManager:
                 dimension, count, vectors, tombstones, metadata_list
             )
 
-            logger.info(
-                f"Loaded {count} documents from {path} "
-                f"(dim={dimension})"
-            )
+            logger.info(f"Loaded {count} documents from {path} " f"(dim={dimension})")
             return storage
 
         except StorageError:
             raise
         except Exception as e:
-            raise StorageError(
-                f"Failed to load database from '{path}': {e}"
-            ) from e
+            raise StorageError(f"Failed to load database from '{path}': {e}") from e
 
     # -- header packing --
 
@@ -214,8 +233,7 @@ class FileManager:
         magic = data[0:4]
         if magic != MAGIC:
             raise StorageError(
-                f"Invalid file: expected magic bytes {MAGIC!r}, "
-                f"got {magic!r}"
+                f"Invalid file: expected magic bytes {MAGIC!r}, " f"got {magic!r}"
             )
 
         endian = struct.unpack_from("<I", data, 4)[0]
@@ -237,16 +255,12 @@ class FileManager:
 
         if dimension == 0:
             raise StorageError("Invalid file: dimension is 0")
-        if count == 0:
-            raise StorageError("Invalid file: document count is 0")
 
         return dimension, count
 
     # -- tombstone bitmap --
 
-    def _pack_tombstones(
-        self, mask: np.ndarray, count: int
-    ) -> bytes:
+    def _pack_tombstones(self, mask: np.ndarray, count: int) -> bytes:
         """Pack the boolean tombstone array into a compact bitmap.
 
         Each bit represents one document. Bit = 1 means active,
@@ -258,13 +272,11 @@ class FileManager:
             if mask[i]:
                 byte_idx = i // 8
                 bit_idx = i % 8
-                bitmap[byte_idx] |= (1 << bit_idx)
+                bitmap[byte_idx] |= 1 << bit_idx
 
         return bytes(bitmap)
 
-    def _unpack_tombstones(
-        self, data: bytes, count: int
-    ) -> np.ndarray:
+    def _unpack_tombstones(self, data: bytes, count: int) -> np.ndarray:
         """Unpack the bitmap back into a boolean array."""
         mask = np.zeros(count, dtype=bool)
 
@@ -278,9 +290,7 @@ class FileManager:
 
     # -- metadata --
 
-    def _pack_metadata(
-        self, all_meta: dict[int, dict], count: int
-    ) -> bytes:
+    def _pack_metadata(self, all_meta: dict[int, dict], count: int) -> bytes:
         """Serialize metadata as a JSON array.
 
         Each entry in the array corresponds to a document by index.
@@ -294,11 +304,13 @@ class FileManager:
                 meta_list.append(all_meta[idx])
             else:
                 # shouldn't happen but be safe
-                meta_list.append({
-                    "doc_id": f"unknown_{idx}",
-                    "text": "",
-                    "metadata": {},
-                })
+                meta_list.append(
+                    {
+                        "doc_id": f"unknown_{idx}",
+                        "text": "",
+                        "metadata": {},
+                    }
+                )
 
         return json.dumps(meta_list, ensure_ascii=False).encode("utf-8")
 
@@ -307,9 +319,7 @@ class FileManager:
         try:
             return json.loads(data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            raise StorageError(
-                f"Corrupted metadata block: {e}"
-            ) from e
+            raise StorageError(f"Corrupted metadata block: {e}") from e
 
     # -- rebuilding storage from loaded data --
 
@@ -328,6 +338,9 @@ class FileManager:
         it was originally saved.
         """
         storage = StorageEngine(dimension=dimension)
+
+        if count == 0:
+            return storage
 
         # set internal state directly -- this is the only place
         # we reach into the storage engine's internals, and it's
