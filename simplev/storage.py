@@ -5,10 +5,9 @@ This is the in-memory data layer. It holds vectors in a contiguous
 numpy array, metadata in a plain dict, and tracks deletions with
 a boolean tombstone mask.
 
-For now this is purely in-memory -- disk persistence (.sv files)
-and the WAL come in a later phase. The interface is designed so
-that adding those later won't require changing how the rest of
-the codebase interacts with storage.
+The interface is designed so that adding persistence, indexing,
+and other layers doesn't require changing how the rest of the
+codebase interacts with storage.
 """
 
 import logging
@@ -17,7 +16,6 @@ from typing import Optional
 import numpy as np
 
 from simplev.exceptions import StorageError
-
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +35,7 @@ class StorageEngine:
 
     def __init__(self, dimension: int) -> None:
         if dimension <= 0:
-            raise StorageError(
-                f"Dimension must be a positive integer, got {dimension}"
-            )
+            raise StorageError(f"Dimension must be a positive integer, got {dimension}")
 
         self._dimension = dimension
 
@@ -132,7 +128,6 @@ class StorageEngine:
             self._vectors = np.vstack([self._vectors, vec_row])
             self._tombstones = np.append(self._tombstones, True)
 
-        # store the metadata
         self._metadata[idx] = {
             "doc_id": doc_id,
             "text": text,
@@ -141,6 +136,54 @@ class StorageEngine:
         self._id_map[doc_id] = idx
 
         self._count += 1
+        return idx
+
+    def update(
+        self,
+        doc_id: str,
+        text: str,
+        vector: np.ndarray,
+        metadata: Optional[dict] = None,
+    ) -> int:
+        """Update an existing document and its vector in place.
+
+        Replaces the text, vector, and metadata for an existing document
+        without changing its internal index. Also reactivates the document
+        if it was previously tombstoned.
+
+        Args:
+            doc_id: Identifier of the document to update.
+            text: New text content.
+            vector: New embedding vector (float32, shape (dimension,)).
+            metadata: Optional new metadata dict.
+
+        Returns:
+            The internal integer index of the document.
+
+        Raises:
+            StorageError: If doc_id does not exist or vector shape is invalid.
+        """
+        if doc_id not in self._id_map:
+            raise StorageError(f"Document '{doc_id}' not found.")
+
+        if vector.shape != (self._dimension,):
+            raise StorageError(
+                f"Vector shape mismatch: expected ({self._dimension},), "
+                f"got {vector.shape}"
+            )
+
+        if vector.dtype != np.float32:
+            vector = vector.astype(np.float32)
+
+        idx = self._id_map[doc_id]
+        self._vectors[idx] = vector
+        self._metadata[idx] = {
+            "doc_id": doc_id,
+            "text": text,
+            "metadata": metadata if metadata is not None else {},
+        }
+        # reactivate if previously tombstoned
+        self._tombstones[idx] = True
         return idx
 
     def mark_deleted(self, doc_id: str) -> bool:
@@ -189,6 +232,76 @@ class StorageEngine:
             raise StorageError(f"Document '{doc_id}' not found.")
         idx = self._id_map[doc_id]
         return self._metadata[idx]
+
+    def get_vector(self, doc_id: str) -> np.ndarray:
+        """Get the embedding vector for a document.
+
+        Args:
+            doc_id: The document to look up.
+
+        Returns:
+            1-D float32 numpy array (a copy, safe to mutate).
+
+        Raises:
+            StorageError: If doc_id doesn't exist.
+        """
+        if doc_id not in self._id_map:
+            raise StorageError(f"Document '{doc_id}' not found.")
+        idx = self._id_map[doc_id]
+        return self._vectors[idx].copy()
+
+    def get_record(self, doc_id: str, include_vector: bool = False) -> Optional[dict]:
+        """Get the complete document record if active.
+
+        Args:
+            doc_id: The document to look up.
+            include_vector: Whether to include the embedding array
+                in the output dict.
+
+        Returns:
+            Dict with 'doc_id', 'text', 'metadata', and optional 'vector'.
+            Returns None if document does not exist or has been tombstoned.
+        """
+        if not self.is_active(doc_id):
+            return None
+
+        idx = self._id_map[doc_id]
+        meta = self._metadata[idx]
+        record: dict = {
+            "doc_id": meta["doc_id"],
+            "text": meta["text"],
+            "metadata": meta.get("metadata", {}).copy(),
+        }
+        if include_vector:
+            record["vector"] = self._vectors[idx].copy()
+        return record
+
+    def get_active_records(self, include_vector: bool = False) -> list[dict]:
+        """Return all active (non-deleted) document records.
+
+        Args:
+            include_vector: Whether to include embedding vector
+                in each record.
+
+        Returns:
+            List of record dicts with 'doc_id', 'text', 'metadata',
+            and optional 'vector'.
+        """
+        if self._tombstones is None or self._count == 0:
+            return []
+        records = []
+        for idx in range(self._count):
+            if self._tombstones[idx]:
+                meta = self._metadata[idx]
+                rec: dict = {
+                    "doc_id": meta["doc_id"],
+                    "text": meta["text"],
+                    "metadata": meta.get("metadata", {}).copy(),
+                }
+                if include_vector:
+                    rec["vector"] = self._vectors[idx].copy()
+                records.append(rec)
+        return records
 
     def get_metadata_by_index(self, index: int) -> dict:
         """Get metadata by internal index. Used during result hydration."""
@@ -272,9 +385,7 @@ class StorageEngine:
         self._metadata = new_metadata
         self._id_map = new_id_map
         self._count = new_idx
-        self._tombstones = (
-            np.ones(new_idx, dtype=bool) if new_idx > 0 else None
-        )
+        self._tombstones = np.ones(new_idx, dtype=bool) if new_idx > 0 else None
 
         logger.info(f"Compaction done. {self._count} records remaining.")
         return removed
@@ -290,7 +401,4 @@ class StorageEngine:
     def __repr__(self) -> str:
         active = self.active_count
         total = self._count
-        return (
-            f"StorageEngine(dim={self._dimension}, "
-            f"docs={active}/{total})"
-        )
+        return f"StorageEngine(dim={self._dimension}, " f"docs={active}/{total})"
