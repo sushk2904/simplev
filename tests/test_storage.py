@@ -8,8 +8,8 @@ metadata lookups, compaction, and edge cases.
 import numpy as np
 import pytest
 
-from simplev.storage import StorageEngine
 from simplev.exceptions import StorageError
+from simplev.storage import StorageEngine
 
 
 # helper to make a random vector of the right dimension
@@ -122,9 +122,9 @@ class TestSoftDeletion:
     def test_mask_reflects_deletion(self, storage_with_data):
         storage_with_data.mark_deleted("doc_1")
         mask = storage_with_data.get_active_mask()
-        assert mask[0] == True   # doc_0
-        assert mask[1] == False  # doc_1 deleted
-        assert mask[2] == True   # doc_2
+        assert mask[0]  # doc_0
+        assert not mask[1]  # doc_1 deleted
+        assert mask[2]  # doc_2
 
     def test_delete_nonexistent_raises(self, storage_with_data):
         with pytest.raises(StorageError, match="not found"):
@@ -242,3 +242,47 @@ class TestClear:
         assert se.active_count == 0
         assert se.get_vectors() is None
         assert se.get_active_mask() is None
+
+
+class TestStorageUpdateAndRetrieval:
+    """Test update(), get_vector(), get_record(), and get_active_records()."""
+
+    def test_update_document(self):
+        se = StorageEngine(dimension=4)
+        v1 = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        v2 = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+        se.add("d1", "version 1", v1, metadata={"v": 1})
+
+        se.update("d1", "version 2", v2, metadata={"v": 2})
+
+        record = se.get_record("d1", include_vector=True)
+        assert record is not None
+        assert record["text"] == "version 2"
+        assert record["metadata"] == {"v": 2}
+        np.testing.assert_array_equal(record["vector"], v2)
+
+    def test_update_nonexistent_raises(self):
+        se = StorageEngine(dimension=4)
+        with pytest.raises(StorageError, match="not found"):
+            se.update("missing", "text", make_vector(4))
+
+    def test_get_vector(self):
+        se = StorageEngine(dimension=4)
+        v = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+        se.add("d1", "text", v)
+        vec = se.get_vector("d1")
+        assert vec is not None
+        with pytest.raises(StorageError, match="not found"):
+            se.get_vector("d_missing")
+
+    def test_get_active_records(self):
+        se = StorageEngine(dimension=4)
+        se.add("d1", "text 1", make_vector(4))
+        se.add("d2", "text 2", make_vector(4))
+        se.add("d3", "text 3", make_vector(4))
+        se.mark_deleted("d2")
+
+        active = list(se.get_active_records())
+        assert len(active) == 2
+        active_ids = {r["doc_id"] for r in active}
+        assert active_ids == {"d1", "d3"}
