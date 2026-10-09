@@ -6,11 +6,10 @@ replay, truncation, and corrupted entry handling.
 """
 
 import json
-import numpy as np
-import pytest
-from pathlib import Path
 
-from simplev.wal import WriteAheadLog, WALEntry
+import numpy as np
+
+from simplev.wal import WALEntry, WriteAheadLog
 
 
 class TestWALEntry:
@@ -175,3 +174,17 @@ class TestWriteAheadLog:
         entries = wal.read_entries()
         recovered = np.array(entries[0].vector, dtype=np.float32)
         np.testing.assert_array_almost_equal(recovered, original_vec, decimal=5)
+
+    def test_log_update_roundtrip(self, tmp_path):
+        wal = WriteAheadLog(tmp_path / "test.wal")
+        new_vec = np.array([4.0, 5.0, 6.0], dtype=np.float32)
+        wal.log_update("d1", "updated text", new_vec, metadata={"version": 2})
+        wal.close()
+
+        entries = wal.read_entries()
+        assert len(entries) == 1
+        assert entries[0].operation == "update"
+        assert entries[0].doc_id == "d1"
+        assert entries[0].text == "updated text"
+        assert entries[0].metadata == {"version": 2}
+        np.testing.assert_array_almost_equal(entries[0].vector, new_vec)
