@@ -45,12 +45,15 @@ class TestCosineSearch:
         # vec 1 points in y direction
         # vec 2 points in x+y (similar to query)
         # vec 3 points in z direction (least similar to x-y queries)
-        return np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ], dtype=np.float32)
+        return np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
 
     def test_basic_search(self, index, simple_vectors):
         query = np.array([1.0, 1.0, 0.0], dtype=np.float32)
@@ -94,11 +97,14 @@ class TestL2Search:
         return FlatIndex(metric="l2")
 
     def test_basic_l2_search(self, index):
-        vectors = np.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [10.0, 10.0],
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [10.0, 10.0],
+            ],
+            dtype=np.float32,
+        )
         query = np.array([0.5, 0.0], dtype=np.float32)
 
         results = index.search(query, vectors, top_k=2)
@@ -108,11 +114,14 @@ class TestL2Search:
         assert 2 not in returned_indices
 
     def test_l2_order_is_ascending(self, index):
-        vectors = np.array([
-            [0.0, 0.0],
-            [5.0, 5.0],
-            [1.0, 1.0],
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [0.0, 0.0],
+                [5.0, 5.0],
+                [1.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
         query = np.array([0.0, 0.0], dtype=np.float32)
         results = index.search(query, vectors, top_k=3)
         scores = [s for _, s in results]
@@ -135,11 +144,14 @@ class TestMaskedSearch:
         return FlatIndex(metric="cosine")
 
     def test_mask_excludes_vectors(self, index):
-        vectors = np.array([
-            [1.0, 0.0, 0.0],  # index 0 - best match but masked out
-            [0.0, 1.0, 0.0],  # index 1
-            [0.8, 0.2, 0.0],  # index 2 - second best
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [1.0, 0.0, 0.0],  # index 0 - best match but masked out
+                [0.0, 1.0, 0.0],  # index 1
+                [0.8, 0.2, 0.0],  # index 2 - second best
+            ],
+            dtype=np.float32,
+        )
         query = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
         # mask out the best match
@@ -148,13 +160,16 @@ class TestMaskedSearch:
 
         returned_indices = [idx for idx, _ in results]
         assert 0 not in returned_indices  # should be excluded
-        assert 2 in returned_indices       # should be the best remaining
+        assert 2 in returned_indices  # should be the best remaining
 
     def test_all_masked_returns_empty(self, index):
-        vectors = np.array([
-            [1.0, 0.0],
-            [0.0, 1.0],
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
         query = np.array([1.0, 0.0], dtype=np.float32)
         mask = np.array([False, False])
         results = index.search(query, vectors, top_k=5, mask=mask)
@@ -205,10 +220,13 @@ class TestEdgeCases:
         assert results[0][0] == 0
 
     def test_zero_vector_doesnt_crash(self, index):
-        vectors = np.array([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-        ], dtype=np.float32)
+        vectors = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
         query = np.array([1.0, 0.0, 0.0], dtype=np.float32)
         # the zero vector should get similarity 0, not cause a division error
         results = index.search(query, vectors, top_k=2)
