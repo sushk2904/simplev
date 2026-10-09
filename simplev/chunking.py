@@ -16,12 +16,12 @@ from typing import Optional
 
 from simplev.exceptions import SimpleVError
 
-
 logger = logging.getLogger(__name__)
 
 
 class ChunkingError(SimpleVError):
     """Something went wrong during text chunking."""
+
     pass
 
 
@@ -75,9 +75,7 @@ def chunk_text(
         return _chunk_by_characters(text, chunk_size, overlap)
 
 
-def _chunk_by_characters(
-    text: str, chunk_size: int, overlap: int
-) -> list[str]:
+def _chunk_by_characters(text: str, chunk_size: int, overlap: int) -> list[str]:
     """Simple character-based chunking with overlap."""
     chunks = []
     start = 0
@@ -116,7 +114,9 @@ def _chunk_by_separator(
             continue
 
         # would adding this segment exceed the chunk size?
-        test_chunk = (current_chunk + separator + segment).strip() if current_chunk else segment
+        test_chunk = (
+            (current_chunk + separator + segment).strip() if current_chunk else segment
+        )
 
         if len(test_chunk) <= chunk_size:
             current_chunk = test_chunk
@@ -189,10 +189,12 @@ def chunk_document(
             "source_doc": doc_id_prefix,
         }
 
-        documents.append({
-            "doc_id": f"{doc_id_prefix}_chunk_{i}",
-            "text": chunk,
-            "metadata": chunk_meta,
-        })
+        documents.append(
+            {
+                "doc_id": f"{doc_id_prefix}_chunk_{i}",
+                "text": chunk,
+                "metadata": chunk_meta,
+            }
+        )
 
     return documents
