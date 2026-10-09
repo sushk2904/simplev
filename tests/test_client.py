@@ -7,15 +7,14 @@ a thin facade so we're mainly testing that it wires things
 together correctly and that save/load and WAL work end-to-end.
 """
 
+from pathlib import Path
+from unittest.mock import patch
+
 import numpy as np
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from simplev.client import Client
 from simplev.exceptions import SimpleVError, StorageError
-from simplev.wal import WriteAheadLog
-
 
 DIM = 4
 
@@ -31,8 +30,8 @@ def mock_embeddings():
         instance = MockEmb.return_value
         instance.dimension = DIM
         instance.embed.side_effect = lambda text: make_vector(DIM)
-        instance.embed_batch.side_effect = (
-            lambda texts: np.stack([make_vector(DIM) for _ in texts])
+        instance.embed_batch.side_effect = lambda texts: np.stack(
+            [make_vector(DIM) for _ in texts]
         )
         yield instance
 
@@ -59,6 +58,12 @@ class TestClientAdd:
         db = Client()
         result = db.add("d1", "hello world")
         assert result == "d1"
+        assert db.count == 1
+
+    def test_insert_alias(self, mock_embeddings):
+        db = Client()
+        result = db.insert("d1", "hello world")
+        assert result is True
         assert db.count == 1
 
     def test_add_with_metadata(self, mock_embeddings):
@@ -248,6 +253,26 @@ class TestClientWAL:
         db2 = Client(path=path, use_wal=True)
         assert db2.count == 1  # d2 should be deleted after replay
 
+    def test_crash_recovery_replays_updates(self, tmp_path, mock_embeddings):
+        path = tmp_path / "db.sv"
+
+        db = Client(path=path, use_wal=True)
+        db.add("d1", "initial text", metadata={"v": 1})
+        db.commit()
+
+        # update in WAL without commit
+        db.update("d1", "updated text", metadata={"v": 2})
+        db._wal.close()
+        del db
+
+        # restart
+        db2 = Client(path=path, use_wal=True)
+        assert db2.count == 1
+        record = db2.get("d1")
+        assert record is not None
+        assert record["text"] == "updated text"
+        assert record["metadata"] == {"v": 2}
+
     def test_no_wal_when_disabled(self, tmp_path, mock_embeddings):
         path = tmp_path / "db.sv"
         db = Client(path=path, use_wal=False)
@@ -262,3 +287,95 @@ class TestClientWAL:
         db.add("d1", "text")
         with pytest.raises(SimpleVError, match="in-memory"):
             db.commit()
+
+
+class TestClientUpdateAndUpsert:
+    """Test update and upsert methods."""
+
+    def test_update_existing(self, mock_embeddings):
+        db = Client()
+        db.add("d1", "initial")
+        db.update("d1", "updated", metadata={"edited": True})
+        rec = db.get("d1")
+        assert rec["text"] == "updated"
+        assert rec["metadata"] == {"edited": True}
+
+    def test_upsert_inserts_new(self, mock_embeddings):
+        db = Client()
+        db.upsert("d1", "new doc")
+        assert db.count == 1
+        assert db.get("d1")["text"] == "new doc"
+
+    def test_upsert_updates_existing(self, mock_embeddings):
+        db = Client()
+        db.add("d1", "initial")
+        db.upsert("d1", "overwritten")
+        assert db.count == 1
+        assert db.get("d1")["text"] == "overwritten"
+
+
+class TestClientGetAndDunder:
+    """Test get() and dictionary-like dunder methods."""
+
+    def test_get_and_getitem(self, mock_embeddings):
+        db = Client()
+        db.add("d1", "hello world", metadata={"author": "alice"})
+        rec = db.get("d1", include_vector=True)
+        assert rec["doc_id"] == "d1"
+        assert rec["text"] == "hello world"
+        assert "vector" in rec
+
+        # __getitem__
+        assert db["d1"]["text"] == "hello world"
+        with pytest.raises(KeyError):
+            _ = db["missing"]
+
+    def test_contains_and_iter(self, mock_embeddings):
+        db = Client()
+        db.add("d1", "one")
+        db.add("d2", "two")
+        assert "d1" in db
+        assert "d3" not in db
+
+        items = list(db)
+        assert len(items) == 2
+        doc_ids = {r["doc_id"] for r in items}
+        assert doc_ids == {"d1", "d2"}
+
+
+class TestClientBatchAndHybridSearch:
+    """Test batch search and hybrid search APIs."""
+
+    def test_search_batch(self, mock_embeddings):
+        db = Client()
+        db.add("d1", "apple fruit")
+        db.add("d2", "banana fruit")
+        batch_results = db.search_batch(["apple", "banana"], top_k=2)
+        assert len(batch_results) == 2
+        assert len(batch_results[0]) <= 2
+
+    def test_hybrid_search(self, mock_embeddings):
+        db = Client()
+        db.add("d1", "Python programming")
+        db.add("d2", "Rust systems")
+        results = db.hybrid_search("Rust", top_k=2, alpha=0.5)
+        assert len(results) > 0
+
+
+class TestClientInfoAndHNSW:
+    """Test info() diagnostics and index_type='hnsw'."""
+
+    def test_info(self, mock_embeddings):
+        db = Client()
+        db.add("d1", "some text")
+        info = db.info()
+        assert info["count"] == 1
+        assert info["active_count"] == 1
+        assert info["dimension"] == DIM
+
+    def test_hnsw_client(self, mock_embeddings):
+        db = Client(index_type="hnsw")
+        db.add("d1", "first")
+        db.add("d2", "second")
+        res = db.search("first", top_k=1)
+        assert len(res) == 1
