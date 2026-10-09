@@ -8,11 +8,8 @@ installed since they're optional.
 """
 
 import pytest
-from pathlib import Path
 
-from simplev.parsers import (
-    parse_text, parse_pdf, parse_docx, auto_parse, ParserError
-)
+from simplev.parsers import ParserError, auto_parse, parse_docx, parse_pdf, parse_text
 
 
 class TestTextParser:
@@ -84,7 +81,8 @@ class TestPDFParser:
     @pytest.fixture
     def has_pymupdf(self):
         try:
-            import fitz
+            import fitz  # noqa: F401
+
             return True
         except ImportError:
             pytest.skip("pymupdf not installed")
@@ -96,7 +94,8 @@ class TestPDFParser:
     def test_import_error_message(self, tmp_path):
         """If pymupdf is missing, error message should say how to install."""
         try:
-            import fitz
+            import fitz  # noqa: F401
+
             pytest.skip("pymupdf is installed, can't test import error")
         except ImportError:
             f = tmp_path / "test.pdf"
@@ -111,7 +110,8 @@ class TestDOCXParser:
     @pytest.fixture
     def has_docx(self):
         try:
-            from docx import Document
+            from docx import Document  # noqa: F401
+
             return True
         except ImportError:
             pytest.skip("python-docx not installed")
@@ -123,7 +123,8 @@ class TestDOCXParser:
     def test_import_error_message(self, tmp_path):
         """If python-docx is missing, error message should say how to install."""
         try:
-            from docx import Document
+            from docx import Document  # noqa: F401
+
             pytest.skip("python-docx is installed, can't test import error")
         except ImportError:
             f = tmp_path / "test.docx"
