@@ -7,9 +7,7 @@ overlap behavior, edge cases, and the chunk_document helper.
 
 import pytest
 
-from simplev.chunking import (
-    chunk_text, chunk_document, ChunkingError
-)
+from simplev.chunking import ChunkingError, chunk_document, chunk_text
 
 
 class TestChunkText:
