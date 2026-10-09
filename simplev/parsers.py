@@ -22,12 +22,12 @@ from typing import Union
 
 from simplev.exceptions import SimpleVError
 
-
 logger = logging.getLogger(__name__)
 
 
 class ParserError(SimpleVError):
     """Something went wrong while parsing a document."""
+
     pass
 
 
@@ -99,9 +99,7 @@ def parse_pdf(path: Union[str, Path]) -> str:
         doc.close()
 
         full_text = "\n\n".join(pages)
-        logger.debug(
-            f"Parsed PDF: {path} ({len(doc)} pages, {len(full_text)} chars)"
-        )
+        logger.debug(f"Parsed PDF: {path} ({len(doc)} pages, {len(full_text)} chars)")
         return full_text
 
     except ParserError:
