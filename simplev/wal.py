@@ -1,13 +1,13 @@
 """
 Write-Ahead Log for SimpleV.
 
-Every insert or delete is written to a .wal file (JSONL format)
+Every insert, update, or delete is written to a .wal file (JSONL format)
 before the in-memory state is touched. If the process crashes,
 we replay the log on next startup to recover any operations
 that didn't make it into the .sv file.
 
 The lifecycle is:
-  1. User calls add() or delete()
+  1. User calls add(), update(), or delete()
   2. We append a JSONL entry to the .wal file
   3. The in-memory storage is updated
   4. On commit(), we save the .sv file and truncate the .wal
@@ -25,9 +25,6 @@ from typing import Optional, Union
 
 import numpy as np
 
-from simplev.exceptions import StorageError
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -36,8 +33,10 @@ class WALEntry:
 
     Each entry is a single line in the JSONL file.
     """
+
     INSERT = "insert"
     DELETE = "delete"
+    UPDATE = "update"
 
     def __init__(
         self,
@@ -55,7 +54,7 @@ class WALEntry:
 
     def to_json(self) -> str:
         """Serialize to a JSON string (one line, no newline at end)."""
-        data = {
+        data: dict = {
             "op": self.operation,
             "doc_id": self.doc_id,
         }
@@ -145,6 +144,31 @@ class WriteAheadLog:
 
         self._write_entry(entry)
 
+    def log_update(
+        self,
+        doc_id: str,
+        text: str,
+        vector: np.ndarray,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Log an update operation.
+
+        Identical in format to an insert log entry, but the operation
+        field is 'update' so replay knows to update-in-place rather
+        than add a new document.
+        """
+        self._ensure_open()
+
+        entry = WALEntry(
+            operation=WALEntry.UPDATE,
+            doc_id=doc_id,
+            text=text,
+            vector=vector.tolist(),
+            metadata=metadata,
+        )
+
+        self._write_entry(entry)
+
     def log_delete(self, doc_id: str) -> None:
         """Log a delete operation."""
         self._ensure_open()
@@ -191,7 +215,7 @@ class WriteAheadLog:
                     # partial writes from a crash could leave a
                     # truncated json line at the end
                     logger.warning(
-                        f"Skipping corrupted WAL entry at line {line_num}: {e}"
+                        f"Skipping corrupted WAL entry at line " f"{line_num}: {e}"
                     )
 
         return entries
@@ -207,7 +231,7 @@ class WriteAheadLog:
         self.close()
 
         # open in write mode to truncate, then close
-        with open(self._path, "w", encoding="utf-8") as f:
+        with open(self._path, "w", encoding="utf-8"):
             pass  # just truncate, write nothing
 
         logger.debug(f"WAL truncated: {self._path}")
