@@ -28,6 +28,9 @@ dependencies = [
     "sentence-transformers>=2.2.0",
 ]
 
+[project.scripts]
+simplev = "simplev.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
