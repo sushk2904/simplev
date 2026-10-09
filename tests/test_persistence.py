@@ -5,18 +5,19 @@ Tests saving and loading the binary format, header validation,
 tombstone bitmap packing, and round-trip consistency.
 """
 
-import json
 import struct
+
 import numpy as np
 import pytest
-from pathlib import Path
 
+from simplev.exceptions import StorageError
 from simplev.persistence import (
-    FileManager, MAGIC, FORMAT_VERSION,
-    HEADER_SIZE, ENDIAN_MARKER,
+    ENDIAN_MARKER,
+    HEADER_SIZE,
+    MAGIC,
+    FileManager,
 )
 from simplev.storage import StorageEngine
-from simplev.exceptions import StorageError
 
 
 def make_vector(dim: int = 4) -> np.ndarray:
@@ -97,11 +98,11 @@ class TestSaveAndLoad:
         loaded = fm.load(path)
 
         mask = loaded.get_active_mask()
-        assert mask[0] == True   # doc_0 active
-        assert mask[1] == False  # doc_1 deleted
-        assert mask[2] == True   # doc_2 active
-        assert mask[3] == False  # doc_3 deleted
-        assert mask[4] == True   # doc_4 active
+        assert mask[0]  # doc_0 active
+        assert not mask[1]  # doc_1 deleted
+        assert mask[2]  # doc_2 active
+        assert not mask[3]  # doc_3 deleted
+        assert mask[4]  # doc_4 active
         assert loaded.active_count == 3
 
     def test_doc_ids_preserved(self, tmp_path):
@@ -183,8 +184,8 @@ class TestLoadValidation:
         header[0:4] = MAGIC
         struct.pack_into("<I", header, 4, ENDIAN_MARKER)
         struct.pack_into("<H", header, 8, 99)  # fake version
-        struct.pack_into("<I", header, 12, 4)   # dimension
-        struct.pack_into("<I", header, 16, 1)   # count
+        struct.pack_into("<I", header, 12, 4)  # dimension
+        struct.pack_into("<I", header, 16, 1)  # count
 
         with open(path, "wb") as f:
             f.write(header)
