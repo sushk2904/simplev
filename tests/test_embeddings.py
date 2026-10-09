@@ -11,7 +11,7 @@ Subsequent runs use the cached version.
 import numpy as np
 import pytest
 
-from simplev.embeddings import EmbeddingManager, DEFAULT_MODEL_NAME
+from simplev.embeddings import DEFAULT_MODEL_NAME, EmbeddingManager
 from simplev.exceptions import EmbeddingError
 
 
