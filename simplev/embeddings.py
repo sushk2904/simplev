@@ -13,6 +13,7 @@ so the rest of the codebase never touches it directly.
 import logging
 from pathlib import Path
 from typing import Optional, Union
+
 import numpy as np
 
 from simplev.exceptions import EmbeddingError
@@ -86,11 +87,14 @@ class EmbeddingManager:
                 kwargs["device"] = self._device
 
             self._model = SentenceTransformer(self._model_name, **kwargs)
-            self._dimension = self._model.get_embedding_dimension()
+            if hasattr(self._model, "get_sentence_embedding_dimension"):
+                self._dimension = self._model.get_sentence_embedding_dimension()
+            elif hasattr(self._model, "get_embedding_dimension"):
+                self._dimension = self._model.get_embedding_dimension()
+            else:
+                self._dimension = int(self._model.encode("test").shape[-1])
 
-            logger.info(
-                f"Model loaded successfully. Dimension: {self._dimension}"
-            )
+            logger.info(f"Model loaded successfully. Dimension: {self._dimension}")
 
         except ImportError:
             raise EmbeddingError(
